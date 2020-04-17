@@ -95,9 +95,11 @@ int insert(int *set, int tag, int numOfWays)
 //		prefetchNextLineOnMiss	(gets the tag for the next cache line only on cache misses)
 void setAssociativeCache(int& h, int& a, ifstream& f, int cacheSize, int lineSize, int numOfWays, string replacementPolicy)
 {
+	resetIfstream(f);
 	string flag;
-	unsigned long int addr, nextAddrTag;
+	unsigned long int addr, nextAddr;
 	int numOfSets, tag, set, offset;
+	int nextAddrTag, nextAddrSet, nextAddrOffset;
 
 	assert(numOfWays >= 1 && "numOfWays cannot be less than 1");
 	numOfSets = cacheSize / (lineSize * numOfWays);
@@ -106,9 +108,11 @@ void setAssociativeCache(int& h, int& a, ifstream& f, int cacheSize, int lineSiz
 		for(int j = 0; j < numOfWays; j++)
 			cache[i][j] = -1;
 		
-	int n = numOfWays + (numOfWays - 1);
+	int n = numOfWays - 1;
 	//use complete binary tree array to model hotColdBits;
-	//cache set is made up of the leaf nodes;
+	//each element in last level [(n-1)/2]..(n-1) correspond to 2 consecutive elements in cache[set];
+	//0 in hotColdArr means left child is hot (MRU) while right is cold (LRU);
+	//1 in hotColdArr means right child is hot while left is cold;
 	int hotColdArr[numOfSets][n];
 	for(int i = 0; i < numOfSets; i++)
 		for(int j = 0; j < n; j++)
@@ -138,50 +142,77 @@ void setAssociativeCache(int& h, int& a, ifstream& f, int cacheSize, int lineSiz
 			offset = addr & (lineSize - 1);
 			set = (addr >> (int)log2(lineSize)) & (numOfSets - 1);
 			tag = (addr >> ((int)log2(numOfSets) + (int)log2(lineSize))) & (ULONG_MAX);
-/*
-			for(int i = 0, j = 1, k = 0; i < n; i++, k++)
+			
+			//j = index of first leaf node, k = cache[set] index;
+			int j = (n - 1) / 2, k = 0;
+			for(int i = 0; i < numOfWays; i++)
 			{
-				if(k == j){cout << endl; j *= 2; k = 0;}
-				cout << hotColdArr[set][i] << " ";
-			}
-			cout << endl << endl;
-*/
-			for(int i = 0; i <= numOfWays; i++)
-			{
-				int x = 0;
-				//get index of leaf node (cache[set][x]);
-				for(int childToGoTo = hotColdArr[set][0]; x < (n - 1) / 2; )
-				{
-					hotColdArr[set][x] = (hotColdArr[set][x] + 1) & 1;
-					//0 means left child is LRU, therefore go to left child;
-					if(childToGoTo == 0)
-						x = (2 * x) + 1;
-					//1 means right child is LRU, therefore go to right child;
-					else if(childToGoTo == 1)
-						x = (2 * x) + 2;
-					childToGoTo = hotColdArr[set][x];
-				}
-
-				//if leaf node contains the tag;
-				if(hotColdArr[set][x] == tag)
+				//if tag is found, set tree path to cache[set][i] as MRU;
+				if(cache[set][i] == tag)
 				{
 					h++;
+        			while(k < i)
+        			{
+          				k++;
+          				if(k % 2 == 0)
+            				j++;
+        			}
+        			//set leaf node path;
+        			if(k % 2 == 0)
+          				hotColdArr[set][j] = 0;
+        			else
+          				hotColdArr[set][j] = 1;
+          			//set node path, going from the bottom level to root;
+        			while(true)
+        			{
+          				bool isEven;
+          				if(j % 2 == 0)
+            				isEven = true;
+          				else
+            				isEven = false;
+            			//become parent;
+          				j = (j - 1) / 2;
+          				if(isEven)
+            				hotColdArr[set][j] = 1;
+          				else
+            				hotColdArr[set][j] = 0;
+          				if(j == 0)
+            				break;
+        			}
 					break;
 				}
-				//if traversed through all leaf nodes and tag's not found;
-				else if(i == numOfWays)
-					hotColdArr[set][x] = tag;
+				//if tag not found, traverse LRU path and insert;
+				else if(i == numOfWays - 1)
+				{
+					//x = index of leaf node after having traversed LRU path;
+					int x = 0;
+					while(x < (n - 1) / 2)
+					{
+						if(hotColdArr[set][x] == 0)
+						{
+							hotColdArr[set][x] = (hotColdArr[set][x] + 1) & 1;
+							x = (2 * x) + 2;
+						}
+						else if(hotColdArr[set][x] == 1)
+						{
+							hotColdArr[set][x] = (hotColdArr[set][x] + 1) & 1;
+							x = (2 * x) + 1;
+						}
+					}
+					while(j < x) 
+					{
+						j++; 
+						k += 2;
+					}
+					if(hotColdArr[set][j] == 0)
+						cache[set][k + 1] = tag;
+					else if(hotColdArr[set][j] == 1)
+						cache[set][k] = tag;
+					hotColdArr[set][j] = (hotColdArr[set][j] + 1) & 1;
+					break;
+				}
 			}
 		}
-
-/*
-			for(int i = 0, j = 1, k = 0; i < n; i++, k++)
-			{
-				if(k == j){cout << endl; j *= 2; k = 0;}
-				cout << hotColdArr[set][i] << " ";
-			}
-			cout << endl << endl;
-//*/
 	}
 /***************************************************/
 	else if(replacementPolicy == "noAllocationOnWriteMiss")
@@ -214,21 +245,24 @@ void setAssociativeCache(int& h, int& a, ifstream& f, int cacheSize, int lineSiz
 			set = (addr >> (int)log2(lineSize)) & (numOfSets - 1);
 			tag = (addr >> ((int)log2(numOfSets) + (int)log2(lineSize))) & (ULONG_MAX);
 
-			nextAddrTag = ((addr + lineSize) >> ((int)log2(numOfSets) + (int)log2(lineSize))) & ULONG_MAX;
+			nextAddr = addr + lineSize;
+			nextAddrOffset = nextAddr & (lineSize - 1);
+			nextAddrSet = (nextAddr >> (int)log2(lineSize)) & (numOfSets - 1);
+			nextAddrTag = (nextAddr >> ((int)log2(numOfSets) + (int)log2(lineSize))) & ULONG_MAX;
 
 			//uses LRU replacement policy for current and prefetched tag;
 			if(find(cache[set], tag, numOfWays) == true)
 			{
 				h++;
-				//if nextAddrTag not found in cache[set], add it;
-				if(find(cache[set], nextAddrTag, numOfWays) == false)
-					insert(cache[set], nextAddrTag, numOfWays);
+				//if nextAddrTag not found in cache[nextAddrSet], insert it;
+				if(find(cache[nextAddrSet], nextAddrTag, numOfWays) == false)
+					insert(cache[nextAddrSet], nextAddrTag, numOfWays);
 			}
 			else
 			{
 				insert(cache[set], tag, numOfWays);
-				if(find(cache[set], nextAddrTag, numOfWays) == false)
-					insert(cache[set], nextAddrTag, numOfWays);
+				if(find(cache[nextAddrSet], nextAddrTag, numOfWays) == false)
+					insert(cache[nextAddrSet], nextAddrTag, numOfWays);
 			}
 		}
 	}
@@ -242,17 +276,26 @@ void setAssociativeCache(int& h, int& a, ifstream& f, int cacheSize, int lineSiz
 			set = (addr >> (int)log2(lineSize)) & (numOfSets - 1);
 			tag = (addr >> ((int)log2(numOfSets) + (int)log2(lineSize))) & (ULONG_MAX);
 
-			nextAddrTag = ((addr + lineSize) >> ((int)log2(numOfSets) + (int)log2(lineSize))) & ULONG_MAX;
+			nextAddr = addr + lineSize;
+			nextAddrOffset = nextAddr & (lineSize - 1);
+			nextAddrSet = (nextAddr >> (int)log2(lineSize)) & (numOfSets - 1);
+			nextAddrTag = (nextAddr >> ((int)log2(numOfSets) + (int)log2(lineSize))) & ULONG_MAX;
 
 			if(find(cache[set], tag, numOfWays) == true)
 				h++;
 			else
 			{
 				insert(cache[set], tag, numOfWays);
-				if(find(cache[set], nextAddrTag, numOfWays) == false)
-					insert(cache[set], nextAddrTag, numOfWays);
+				if(find(cache[nextAddrSet], nextAddrTag, numOfWays) == false)
+					insert(cache[nextAddrSet], nextAddrTag, numOfWays);
 			}
 		}
+	}
+/***************************************************/
+	else
+	{
+		cout << "replacementPolicy not found. " << endl;
+		exit(EXIT_FAILURE);
 	}
 /***************************************************/
 }
@@ -287,105 +330,117 @@ int main(int argc, char *argv[])
 	if(!outFile.is_open())
 		abort();
 
-/*
+	cout << "# cacheHits,# cacheAccesses;" << endl;
+
+cout << "Direct Mapped Cache (1KB, 4KB, 16KB, 32KB) w/ line size of 32B" << endl << " ";
 	directMappedCache(hits, accesses, inFile, 1024, 32);
+	printToFile(outFile, hits, accesses);
 	outputAndReset(hits, accesses);
-	resetIfstream(inFile);
 	cout << " ";
 	directMappedCache(hits, accesses, inFile, 4096, 32);
+	printToFile(outFile, hits, accesses);
 	outputAndReset(hits, accesses);
-	resetIfstream(inFile);
 	cout << " ";
 	directMappedCache(hits, accesses, inFile, 16384, 32);
+	printToFile(outFile, hits, accesses);
 	outputAndReset(hits, accesses);
-	resetIfstream(inFile);
 	cout << " ";
 	directMappedCache(hits, accesses, inFile, 32768, 32);
+	printToFile(outFile, hits, accesses);
 	outputAndReset(hits, accesses);
-	resetIfstream(inFile);
 	cout << endl;
+	outFile << endl;
 
+cout << "2-, 4-, 8-, and 16- Way Set Associative Cache (16KB) w/ line size of 32B [LRU]" << endl << " ";
 	setAssociativeCache(hits, accesses, inFile, 16384, 32, 2, "LRU");
+	printToFile(outFile, hits, accesses);
 	outputAndReset(hits, accesses);
-	resetIfstream(inFile);
 	cout << " ";
 	setAssociativeCache(hits, accesses, inFile, 16384, 32, 4, "LRU");
+	printToFile(outFile, hits, accesses);
 	outputAndReset(hits, accesses);
-	resetIfstream(inFile);
 	cout << " ";
 	setAssociativeCache(hits, accesses, inFile, 16384, 32, 8, "LRU");
+	printToFile(outFile, hits, accesses);
 	outputAndReset(hits, accesses);
-	resetIfstream(inFile);
 	cout << " ";
 	setAssociativeCache(hits, accesses, inFile, 16384, 32, 16, "LRU");
+	printToFile(outFile, hits, accesses);
 	outputAndReset(hits, accesses);
-	resetIfstream(inFile);
 	cout << endl;
+	outFile << endl;
 
+cout << "Fully Associative Cache (16KB) w/ line size of 32B [LRU]" << endl << " ";
 	fullyAssociativeCache(hits, accesses, inFile, 16384, 32, "LRU");
+	printToFile(outFile, hits, accesses);
 	outputAndReset(hits, accesses);
-	resetIfstream(inFile);
 	cout << endl;
-*/
+	outFile << endl;
 
-//WRONG---------------------------
+cout << "Fully Associative Cache (16KB) w/ line size of 32B [PLRU]" << endl << " ";
 	fullyAssociativeCache(hits, accesses, inFile, 16384, 32, "PLRU");
+	printToFile(outFile, hits, accesses);
 	outputAndReset(hits, accesses);
 	resetIfstream(inFile);
 	cout << endl;
-//WRONG---------------------------
+	outFile << endl;
 
-/*
+cout << "2-, 4-, 8-, and 16- Way Set Associative Cache (16KB) w/ line size of 32B [noAllocationOnWriteMiss]" << endl << " ";
 	setAssociativeCache(hits, accesses, inFile, 16384, 32, 2, "noAllocationOnWriteMiss");
+	printToFile(outFile, hits, accesses);
 	outputAndReset(hits, accesses);
-	resetIfstream(inFile);
 	cout << " ";
 	setAssociativeCache(hits, accesses, inFile, 16384, 32, 4, "noAllocationOnWriteMiss");
+	printToFile(outFile, hits, accesses);
 	outputAndReset(hits, accesses);
-	resetIfstream(inFile);
 	cout << " ";
 	setAssociativeCache(hits, accesses, inFile, 16384, 32, 8, "noAllocationOnWriteMiss");
+	printToFile(outFile, hits, accesses);
 	outputAndReset(hits, accesses);
-	resetIfstream(inFile);
 	cout << " ";
 	setAssociativeCache(hits, accesses, inFile, 16384, 32, 16, "noAllocationOnWriteMiss");
+	printToFile(outFile, hits, accesses);
 	outputAndReset(hits, accesses);
-	resetIfstream(inFile);
 	cout << endl;
-//*/
+	outFile << endl;
+
+cout << "2-, 4-, 8-, and 16- Way Set Associative Cache (16KB) w/ line size of 32B [prefetchNextLine]" << endl << " ";
 	setAssociativeCache(hits, accesses, inFile, 16384, 32, 2, "prefetchNextLine");
+	printToFile(outFile, hits, accesses);
 	outputAndReset(hits, accesses);
-	resetIfstream(inFile);
 	cout << " ";
 	setAssociativeCache(hits, accesses, inFile, 16384, 32, 4, "prefetchNextLine");
+	printToFile(outFile, hits, accesses);
 	outputAndReset(hits, accesses);
-	resetIfstream(inFile);
 	cout << " ";
 	setAssociativeCache(hits, accesses, inFile, 16384, 32, 8, "prefetchNextLine");
+	printToFile(outFile, hits, accesses);
 	outputAndReset(hits, accesses);
-	resetIfstream(inFile);
 	cout << " ";
 	setAssociativeCache(hits, accesses, inFile, 16384, 32, 16, "prefetchNextLine");
+	printToFile(outFile, hits, accesses);
 	outputAndReset(hits, accesses);
-	resetIfstream(inFile);
 	cout << endl;
+	outFile << endl;
 
+cout << "2-, 4-, 8-, and 16- Way Set Associative Cache (16KB) w/ line size of 32B [prefetchNextLineOnMiss]" << endl << " ";
 	setAssociativeCache(hits, accesses, inFile, 16384, 32, 2, "prefetchNextLineOnMiss");
+	printToFile(outFile, hits, accesses);
 	outputAndReset(hits, accesses);
-	resetIfstream(inFile);
 	cout << " ";
 	setAssociativeCache(hits, accesses, inFile, 16384, 32, 4, "prefetchNextLineOnMiss");
+	printToFile(outFile, hits, accesses);
 	outputAndReset(hits, accesses);
-	resetIfstream(inFile);
 	cout << " ";
 	setAssociativeCache(hits, accesses, inFile, 16384, 32, 8, "prefetchNextLineOnMiss");
+	printToFile(outFile, hits, accesses);
 	outputAndReset(hits, accesses);
-	resetIfstream(inFile);
 	cout << " ";
 	setAssociativeCache(hits, accesses, inFile, 16384, 32, 16, "prefetchNextLineOnMiss");
+	printToFile(outFile, hits, accesses);
 	outputAndReset(hits, accesses);
-	resetIfstream(inFile);
 	cout << endl;
+	outFile << endl;
 
 	inFile.close();
 	outFile.close();
