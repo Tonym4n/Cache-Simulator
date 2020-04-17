@@ -36,53 +36,79 @@ void printToFile(ofstream& f, int h, int a)
 	f << h << "," << a << ";";
 }
 
-//sets the hit rate for a direct mapped cache;
-void directMappedCache(int& h, int& a, ifstream& f, int cacheSize, int lineSize)
+//returns true if tag is found in the cache set and updates tag to be MRU element;
+bool find(int *set, int tag, int numOfWays)
 {
-	string flag;
-	unsigned long int addr;
-	int numOfSets, tag, set, offset;
+	for(int i = 0; i < numOfWays; i++)
+		//if found;
+		if(set[i] == tag)
+		{
+			int lastPos = numOfWays - 1;
+			for(int j = i; j < numOfWays - 1; j++)
+			{
+				//if found and set still has empty lines;
+				//replace last non empty element;
+				if(set[j + 1] == -1)
+				{
+					lastPos = j;
+					break;
+				}
+				set[j] = set[j + 1];
+			}
+			set[lastPos] = tag;
+			return true;
+		}
+	return false;
+}
 
-	numOfSets = cacheSize / lineSize;
-	int cache[numOfSets];
-	for(int i = 0; i < numOfSets; i++)
-		cache[i] = -1;
-
-	while(f >> flag >> std::hex >> addr)
+//inserts tag into the cache set (using LRU policy) and returns the replaced value;
+//LRU = leftmost element, MRU = rightmost element;
+int insert(int *set, int tag, int numOfWays)
+{
+	int temp = set[0];
+	for(int i = 0; i < numOfWays; i++)
 	{
-		a++;
-		//offset field = rightmost bits based on line size;
-		offset = addr & (lineSize - 1);
-		//set field = middle bits; shift rightward to remove offset bits;
-		set = (addr >> (int)log2(lineSize)) & (numOfSets - 1);
-		//tag field = leftmost bits; shift rightward to remove offset + set bits;
-		tag = (addr >> ((int)log2(numOfSets) + (int)log2(lineSize))) & (ULONG_MAX);
-
-		//if found, increment hits; else put tag into cache;
-		if(cache[set] == tag)
-			h++;
-		else
-			cache[set] = tag;
+		//if cache set still has empty lines, put tag in next empty line;
+		if(set[i] == -1)
+		{
+			set[i] = tag;
+			return temp;
+		}
+		//if cache set is full, shift everything left and put tag at end;
+		else if(i == numOfWays - 1)
+		{
+			for(int j = 0; j < numOfWays - 1; j++)
+				set[j] = set[j + 1];
+			set[i] = tag;
+			return temp;
+		}
 	}
+	return temp;
 }
 
 //sets the hit rate for an n-way set associative cache;
-//replaces items using either LRU or hot-cold LRU approximation (PLRU) policy;
-void setAssociativeCache(int& h, int& a, ifstream& f, int cacheSize, int lineSize, int way, string replacementPolicy)
+//utilizes one of the following replacement policies:
+//		LRU		(replaces the least recently used element, on both hits and misses)
+//		PLRU	(pseudo LRU, approximates LRU policy using hot-cold bits or hot-cold tree)
+//		noAllocationOnWriteMiss (if a store ("S") instruction misses, write directly into memory instead of the cache)
+//		prefetchNextLine		(gets the tag for the next cache line, both on hits and misses)
+//		prefetchNextLineOnMiss	(gets the tag for the next cache line only on cache misses)
+void setAssociativeCache(int& h, int& a, ifstream& f, int cacheSize, int lineSize, int numOfWays, string replacementPolicy)
 {
 	string flag;
-	unsigned long int addr;
+	unsigned long int addr, nextAddrTag;
 	int numOfSets, tag, set, offset;
 
-	assert(way >= 1 && "way cannot be less than 1");
-	numOfSets = cacheSize / (lineSize * way);
-	int cache[numOfSets][way];
+	assert(numOfWays >= 1 && "numOfWays cannot be less than 1");
+	numOfSets = cacheSize / (lineSize * numOfWays);
+	int cache[numOfSets][numOfWays];
 	for(int i = 0; i < numOfSets; i++)
-		for(int j = 0; j < way; j++)
+		for(int j = 0; j < numOfWays; j++)
 			cache[i][j] = -1;
 		
-	int n = way - 1;
+	int n = numOfWays + (numOfWays - 1);
 	//use complete binary tree array to model hotColdBits;
+	//cache set is made up of the leaf nodes;
 	int hotColdArr[numOfSets][n];
 	for(int i = 0; i < numOfSets; i++)
 		for(int j = 0; j < n; j++)
@@ -97,44 +123,10 @@ void setAssociativeCache(int& h, int& a, ifstream& f, int cacheSize, int lineSiz
 			set = (addr >> (int)log2(lineSize)) & (numOfSets - 1);
 			tag = (addr >> ((int)log2(numOfSets) + (int)log2(lineSize))) & (ULONG_MAX);
 
-			//cache[0] = LRU; cache[rightmost end] = MRU;
-			//when replacing LRU, shift all elements left and insert at rightmost end;	
-			for(int i = 0; i < way; i++)
-			{
-				//if found;
-				if(cache[set][i] == tag)
-				{
-					h++;
-					int lastPos = way - 1;
-					for(int j = i; j < way - 1; j++)
-					{
-						//if found and set still has empty lines;
-						//replace last non empty element;
-						if(cache[set][j + 1] == -1)
-						{
-							lastPos = j;
-							break;
-						}
-						cache[set][j] = cache[set][j + 1];
-					}
-					cache[set][lastPos] = tag;
-					break;
-				}
-				//if not found and set still has empty lines, put tag in next empty line;
-				else if(cache[set][i] == -1)
-				{
-					cache[set][i] = tag;
-					break;
-				}
-				//if not found and set is full, shift everything left and put tag at end;
-				else if(i == way - 1)
-				{
-					for(int j = 0; j < way - 1; j++)
-						cache[set][j] = cache[set][j + 1];
-					cache[set][i] = tag;
-					break;
-				}
-			}	
+			if(find(cache[set], tag, numOfWays) == true)
+				h++;
+			else
+				insert(cache[set], tag, numOfWays);
 		}
 	}
 /***************************************************/
@@ -146,64 +138,39 @@ void setAssociativeCache(int& h, int& a, ifstream& f, int cacheSize, int lineSiz
 			offset = addr & (lineSize - 1);
 			set = (addr >> (int)log2(lineSize)) & (numOfSets - 1);
 			tag = (addr >> ((int)log2(numOfSets) + (int)log2(lineSize))) & (ULONG_MAX);
-
 /*
 			for(int i = 0, j = 1, k = 0; i < n; i++, k++)
 			{
 				if(k == j){cout << endl; j *= 2; k = 0;}
 				cout << hotColdArr[set][i] << " ";
 			}
-			cout << endl;
-			for(int i = 0; i < way; i++)
-				cout << cache[set][i] << " ";
 			cout << endl << endl;
-//*/
-
-
-			for(int i = 0; i < way; i++)
+*/
+			for(int i = 0; i <= numOfWays; i++)
 			{
-				if(cache[set][i] == tag)
+				int x = 0;
+				//get index of leaf node (cache[set][x]);
+				for(int childToGoTo = hotColdArr[set][0]; x < (n - 1) / 2; )
+				{
+					hotColdArr[set][x] = (hotColdArr[set][x] + 1) & 1;
+					//0 means left child is LRU, therefore go to left child;
+					if(childToGoTo == 0)
+						x = (2 * x) + 1;
+					//1 means right child is LRU, therefore go to right child;
+					else if(childToGoTo == 1)
+						x = (2 * x) + 2;
+					childToGoTo = hotColdArr[set][x];
+				}
+
+				//if leaf node contains the tag;
+				if(hotColdArr[set][x] == tag)
 				{
 					h++;
 					break;
 				}
-				//traverse LRU path;
-				//0 means left child is MRU, therefore go to right child;
-				//1 means right child is MRU, therefore go to left child;
-				else if(i == way - 1)
-				{
-					//get set index of leaf node;
-					int x = 0;
-					while(x < (n - 1) / 2)
-					{
-						if(hotColdArr[set][x] == 0)
-						{
-							hotColdArr[set][x] = (hotColdArr[set][x] + 1) & 1;
-							x = (2 * x) + 2;
-						}
-						else if(hotColdArr[set][x] == 1)
-						{
-							hotColdArr[set][x] = (hotColdArr[set][x] + 1) & 1;
-							x = (2 * x) + 1;
-						}
-					}
-
-					//j starts at leftmost leaf node;
-					//k starts at cache[set][0];
-					//when j == x, update its child, which corresponds to a cache line;
-					for(int j = (n - 1) / 2, k = 0; j < n; j++, k += 2)
-					{
-						if(j == x)
-						{
-							if(hotColdArr[set][j] == 0)
-									cache[set][k + 1] = tag;
-							else if(hotColdArr[set][j] == 1)
-									cache[set][k] = tag;
-							hotColdArr[set][j] = (hotColdArr[set][j] + 1) & 1;
-							break;
-						}
-					}
-				}
+				//if traversed through all leaf nodes and tag's not found;
+				else if(i == numOfWays)
+					hotColdArr[set][x] = tag;
 			}
 		}
 
@@ -213,86 +180,97 @@ void setAssociativeCache(int& h, int& a, ifstream& f, int cacheSize, int lineSiz
 				if(k == j){cout << endl; j *= 2; k = 0;}
 				cout << hotColdArr[set][i] << " ";
 			}
-			cout << endl;
-			for(int i = 0; i < way; i++)
-				cout << cache[set][i] << " ";
 			cout << endl << endl;
 //*/
+	}
+/***************************************************/
+	else if(replacementPolicy == "noAllocationOnWriteMiss")
+	{
+		while(f >> flag >> std::hex >> addr)
+		{
+			a++;
+			offset = addr & (lineSize - 1);
+			set = (addr >> (int)log2(lineSize)) & (numOfSets - 1);
+			tag = (addr >> ((int)log2(numOfSets) + (int)log2(lineSize))) & (ULONG_MAX);
 
+			//LRU replacement policy;			
+			if(find(cache[set], tag, numOfWays) == true)
+				h++;
+			else if(flag != "S")
+				insert(cache[set], tag, numOfWays);
+			else if(flag == "S")
+				{
+					//code to write tag directly into memory due to store instruction;
+				}
+		}
+	}
+/***************************************************/
+	else if(replacementPolicy == "prefetchNextLine")
+	{
+		while(f >> flag >> std::hex >> addr)
+		{
+			a++;
+			offset = addr & (lineSize - 1);
+			set = (addr >> (int)log2(lineSize)) & (numOfSets - 1);
+			tag = (addr >> ((int)log2(numOfSets) + (int)log2(lineSize))) & (ULONG_MAX);
+
+			nextAddrTag = ((addr + lineSize) >> ((int)log2(numOfSets) + (int)log2(lineSize))) & ULONG_MAX;
+
+			//uses LRU replacement policy for current and prefetched tag;
+			if(find(cache[set], tag, numOfWays) == true)
+			{
+				h++;
+				//if nextAddrTag not found in cache[set], add it;
+				if(find(cache[set], nextAddrTag, numOfWays) == false)
+					insert(cache[set], nextAddrTag, numOfWays);
+			}
+			else
+			{
+				insert(cache[set], tag, numOfWays);
+				if(find(cache[set], nextAddrTag, numOfWays) == false)
+					insert(cache[set], nextAddrTag, numOfWays);
+			}
+		}
+	}
+/***************************************************/
+	else if(replacementPolicy == "prefetchNextLineOnMiss")
+	{
+		while(f >> flag >> std::hex >> addr)
+		{
+			a++;
+			offset = addr & (lineSize - 1);
+			set = (addr >> (int)log2(lineSize)) & (numOfSets - 1);
+			tag = (addr >> ((int)log2(numOfSets) + (int)log2(lineSize))) & (ULONG_MAX);
+
+			nextAddrTag = ((addr + lineSize) >> ((int)log2(numOfSets) + (int)log2(lineSize))) & ULONG_MAX;
+
+			if(find(cache[set], tag, numOfWays) == true)
+				h++;
+			else
+			{
+				insert(cache[set], tag, numOfWays);
+				if(find(cache[set], nextAddrTag, numOfWays) == false)
+					insert(cache[set], nextAddrTag, numOfWays);
+			}
+		}
 	}
 /***************************************************/
 }
 
-//if a store instruction misses, write it directly into memory instead of the cache;
-void setAssociativeCacheNoAllocationOnWriteMiss(int& h, int& a, ifstream& f, int cacheSize, int lineSize, int way)
+//sets the hit rate for a direct mapped cache;
+void directMappedCache(int& h, int& a, ifstream& f, int cacheSize, int lineSize)
 {
-	string flag;
-	unsigned long int addr;
-	int numOfSets, tag, set, offset;
-
-	assert(way >= 1 && "way cannot be less than 1");
-	numOfSets = cacheSize / (lineSize * way);
-	int cache[numOfSets][way];
-	for(int i = 0; i < numOfSets; i++)
-		for(int j = 0; j < way; j++)
-			cache[i][j] = -1;
-
-	while(f >> flag >> std::hex >> addr)
-	{
-		a++;
-		offset = addr & (lineSize - 1);
-		set = (addr >> (int)log2(lineSize)) & (numOfSets - 1);
-		tag = (addr >> ((int)log2(numOfSets) + (int)log2(lineSize))) & (ULONG_MAX);
-
-		//LRU replacement policy;
-		for(int i = 0; i < way; i++)
-		{
-			//if found;
-			if(cache[set][i] == tag)
-			{
-				h++;
-				int lastPos = way - 1;
-				for(int j = i; j < way - 1; j++)
-				{
-					if(cache[set][j + 1] == -1)
-					{
-						lastPos = j;
-						break;
-					}
-					cache[set][j] = cache[set][j + 1];
-				}
-				cache[set][lastPos] = tag;
-				break;
-			}
-			//if not found and set still has empty lines AND instruction isn't store;
-			else if(cache[set][i] == -1 && flag != "S")
-			{
-				cache[set][i] = tag;
-				break;
-			}
-			//if not found and set is full AND instruction isn't store;
-			else if(i == way - 1 && flag != "S")
-			{
-				for(int j = 0; j < way - 1; j++)
-					cache[set][j] = cache[set][j + 1];
-				cache[set][i] = tag;
-				break;
-			}
-			else if(flag == "S")
-			{
-				//code to write tag + data directly into memory (store instruction);
-			}
-		}	
-	}
+	//a directMappedCache is simply a 1-way n set associative cache;
+	setAssociativeCache(h, a, f, cacheSize, lineSize, 1, "LRU");
 }
 
 //sets the hit rate for a fully associative cache;
 void fullyAssociativeCache(int& h, int& a, ifstream& f, int cacheSize, int lineSize, string replacementPolicy)
 {
 	//a fullyAssociativeCache is simply an n-way 1 set associative cache;
-	//cacheSize = numOfSets * lineSize * way;
-	int way = cacheSize / lineSize;
-	setAssociativeCache(h, a, f, cacheSize, lineSize, way, replacementPolicy);
+	//cacheSize = numOfSets * lineSize * numOfWays;
+	int numOfWays = cacheSize / lineSize;
+	setAssociativeCache(h, a, f, cacheSize, lineSize, numOfWays, replacementPolicy);
 }
 
 //driver function to test different kinds of caches;
@@ -313,15 +291,15 @@ int main(int argc, char *argv[])
 	directMappedCache(hits, accesses, inFile, 1024, 32);
 	outputAndReset(hits, accesses);
 	resetIfstream(inFile);
-	cout << endl;
+	cout << " ";
 	directMappedCache(hits, accesses, inFile, 4096, 32);
 	outputAndReset(hits, accesses);
 	resetIfstream(inFile);
-	cout << endl;
+	cout << " ";
 	directMappedCache(hits, accesses, inFile, 16384, 32);
 	outputAndReset(hits, accesses);
 	resetIfstream(inFile);
-	cout << endl;
+	cout << " ";
 	directMappedCache(hits, accesses, inFile, 32768, 32);
 	outputAndReset(hits, accesses);
 	resetIfstream(inFile);
@@ -330,15 +308,15 @@ int main(int argc, char *argv[])
 	setAssociativeCache(hits, accesses, inFile, 16384, 32, 2, "LRU");
 	outputAndReset(hits, accesses);
 	resetIfstream(inFile);
-	cout << endl;
+	cout << " ";
 	setAssociativeCache(hits, accesses, inFile, 16384, 32, 4, "LRU");
 	outputAndReset(hits, accesses);
 	resetIfstream(inFile);
-	cout << endl;
+	cout << " ";
 	setAssociativeCache(hits, accesses, inFile, 16384, 32, 8, "LRU");
 	outputAndReset(hits, accesses);
 	resetIfstream(inFile);
-	cout << endl;
+	cout << " ";
 	setAssociativeCache(hits, accesses, inFile, 16384, 32, 16, "LRU");
 	outputAndReset(hits, accesses);
 	resetIfstream(inFile);
@@ -349,25 +327,62 @@ int main(int argc, char *argv[])
 	resetIfstream(inFile);
 	cout << endl;
 */
-///*WRONG---------------------------
+
+//WRONG---------------------------
 	fullyAssociativeCache(hits, accesses, inFile, 16384, 32, "PLRU");
 	outputAndReset(hits, accesses);
 	resetIfstream(inFile);
 	cout << endl;
-//  WRONG---------------------------*/
-	setAssociativeCacheNoAllocationOnWriteMiss(hits, accesses, inFile, 16384, 32, 2);
+//WRONG---------------------------
+
+/*
+	setAssociativeCache(hits, accesses, inFile, 16384, 32, 2, "noAllocationOnWriteMiss");
+	outputAndReset(hits, accesses);
+	resetIfstream(inFile);
+	cout << " ";
+	setAssociativeCache(hits, accesses, inFile, 16384, 32, 4, "noAllocationOnWriteMiss");
+	outputAndReset(hits, accesses);
+	resetIfstream(inFile);
+	cout << " ";
+	setAssociativeCache(hits, accesses, inFile, 16384, 32, 8, "noAllocationOnWriteMiss");
+	outputAndReset(hits, accesses);
+	resetIfstream(inFile);
+	cout << " ";
+	setAssociativeCache(hits, accesses, inFile, 16384, 32, 16, "noAllocationOnWriteMiss");
 	outputAndReset(hits, accesses);
 	resetIfstream(inFile);
 	cout << endl;
-	setAssociativeCacheNoAllocationOnWriteMiss(hits, accesses, inFile, 16384, 32, 4);
+//*/
+	setAssociativeCache(hits, accesses, inFile, 16384, 32, 2, "prefetchNextLine");
+	outputAndReset(hits, accesses);
+	resetIfstream(inFile);
+	cout << " ";
+	setAssociativeCache(hits, accesses, inFile, 16384, 32, 4, "prefetchNextLine");
+	outputAndReset(hits, accesses);
+	resetIfstream(inFile);
+	cout << " ";
+	setAssociativeCache(hits, accesses, inFile, 16384, 32, 8, "prefetchNextLine");
+	outputAndReset(hits, accesses);
+	resetIfstream(inFile);
+	cout << " ";
+	setAssociativeCache(hits, accesses, inFile, 16384, 32, 16, "prefetchNextLine");
 	outputAndReset(hits, accesses);
 	resetIfstream(inFile);
 	cout << endl;
-	setAssociativeCacheNoAllocationOnWriteMiss(hits, accesses, inFile, 16384, 32, 8);
+
+	setAssociativeCache(hits, accesses, inFile, 16384, 32, 2, "prefetchNextLineOnMiss");
 	outputAndReset(hits, accesses);
 	resetIfstream(inFile);
-	cout << endl;
-	setAssociativeCacheNoAllocationOnWriteMiss(hits, accesses, inFile, 16384, 32, 16);
+	cout << " ";
+	setAssociativeCache(hits, accesses, inFile, 16384, 32, 4, "prefetchNextLineOnMiss");
+	outputAndReset(hits, accesses);
+	resetIfstream(inFile);
+	cout << " ";
+	setAssociativeCache(hits, accesses, inFile, 16384, 32, 8, "prefetchNextLineOnMiss");
+	outputAndReset(hits, accesses);
+	resetIfstream(inFile);
+	cout << " ";
+	setAssociativeCache(hits, accesses, inFile, 16384, 32, 16, "prefetchNextLineOnMiss");
 	outputAndReset(hits, accesses);
 	resetIfstream(inFile);
 	cout << endl;
